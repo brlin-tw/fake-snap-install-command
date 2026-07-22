@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Fake snap install command for testing purposes
+#
+# Copyright 2026 林博仁(Buo-ren Lin) <buo.ren.lin@gmail.com>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -e
+
+# Basic argument parsing for "snap install <name>"
+if [ "$1" != "install" ]; then
+    echo "[fake-snap] Intercepted non-install command: snap $@"
+    exit 0
+fi
+
+SNAP_NAME="$2"
+
+if [ -z "$SNAP_NAME" ]; then
+    echo "[fake-snap] Error: No snap name specified."
+    exit 1
+fi
+
+echo "[fake-snap] Intercepting: snap install $SNAP_NAME"
+
+# Ensure extraction dependencies exist
+command -v unsquashfs >/dev/null 2>&1 || { apt-get update && apt-get install -y squashfs-tools; }
+command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y curl; }
+command -v jq >/dev/null 2>&1 || { apt-get update && apt-get install -y jq; }
+
+TARGET_DIR="/snap/$SNAP_NAME"
+CURRENT_DIR="$TARGET_DIR/current"
+
+# Check if already installed
+if [ -d "$CURRENT_DIR" ]; then
+    echo "[fake-snap] $SNAP_NAME is already extracted at $CURRENT_DIR"
+    exit 0
+fi
+
+WORK_DIR=$(mktemp -d)
+cd "$WORK_DIR"
+
+echo "[fake-snap] Querying Snap Store API for $SNAP_NAME..."
+# Query Ubuntu Snap Store v2 API for the download link
+DOWNLOAD_URL=$(curl -sH 'Snap-Device-Series: 16' "https://api.snapcraft.io/v2/snaps/info/$SNAP_NAME" | \
+    jq -r '.["channel-map"][] | select(.channel.risk=="stable" and .channel.track=="latest") | .download.url' | head -n 1)
+
+if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+    echo "[fake-snap] Error: Could not find download URL for snap '$SNAP_NAME'"
+    rm -rf "$WORK_DIR"
+    exit 1
+fi
+
+echo "[fake-snap] Downloading $SNAP_NAME..."
+curl -sL "$DOWNLOAD_URL" -o package.snap
+
+echo "[fake-snap] Extracting to $CURRENT_DIR..."
+mkdir -p "$TARGET_DIR"
+unsquashfs -d "$CURRENT_DIR" package.snap
+
+# Cleanup temporary download
+cd /
+rm -rf "$WORK_DIR"
+
+echo "[fake-snap] Successfully stubbed $SNAP_NAME into /snap/$SNAP_NAME/current"
